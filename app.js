@@ -1,13 +1,10 @@
 import{initializeApp}from"https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
 import{getAuth,signInAnonymously}from"https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-import{getFirestore,collection,query,where,getDocs,addDoc,updateDoc,doc,onSnapshot,getDoc}from"https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+import{getFirestore,collection,query,where,getDocs,addDoc,updateDoc,doc,onSnapshot,getDoc,arrayUnion}from"https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
 const FC={apiKey:"AIzaSyBAloQE7GiygKpOg_M5WU3jwP2Xd4yHCbw",authDomain:"yutnori-bc2d0.firebaseapp.com",projectId:"yutnori-bc2d0",storageBucket:"yutnori-bc2d0.firebasestorage.app",messagingSenderId:"1067759084491",appId:"1:1067759084491:web:2fd82f415030c31a440c4e"};
 const fbApp=initializeApp(FC),auth=getAuth(fbApp),fdb=getFirestore(fbApp);
 
-// ============================================================
-// DOM
-// ============================================================
 const $=id=>document.getElementById(id);
 const lobbyEl=$("lobby"),gameEl=$("game");
 const findBtn=$("find-btn"),statusMsg=$("status-msg"),gameStatusMsg=$("game-status-msg");
@@ -16,13 +13,17 @@ const timerWrap=$("timer-wrap"),timerBar=$("timer-bar"),timerText=$("timer-text"
 const boardEl=$("board"),boardSvg=$("board-svg");
 const myPcsEl=$("my-pcs"),oppPcsEl=$("opp-pcs");
 const fxOverlay=$("fx-overlay"),targetBanner=$("target-banner"),cancelTarget=$("cancel-target");
-const roomInfo=$("room-info");
-const p1Name=$("p1-name"),p2Name=$("p2-name");
+const roomInfo=$("room-info"),p1Name=$("p1-name"),p2Name=$("p2-name");
 const backLobbyBtn=$("back-lobby-btn");
+// 채팅
+const chatToggle=$("chat-toggle"),chatBadge=$("chat-badge"),chatPanel=$("chat-panel");
+const chatClose=$("chat-close"),chatMsgs=$("chat-msgs"),chatInput=$("chat-input"),chatSend=$("chat-send");
 
 const GOAL=99;
 let matchId=null,busy=false,activeSkill=null,turnTmr=null,tLeft=0;
 let targetMode=null,lastMatch=null,unsubMatch=null;
+let chatOpen=false,lastChatLen=0,unreadChat=0;
+let presenceInterval=null; // 상대 퇴장 감지용
 
 // ============================================================
 // 윷판 좌표 + 경로
@@ -51,7 +52,6 @@ function advance(pc,steps){
 function switchR(c,n){if(c==="outer"&&n===5)return"dA";if(c==="outer"&&n===10)return"dB";if(c==="dA"&&n===22)return"dAB";return c;}
 function canMv(pc,i,mv,all){if(pc.f)return false;if(mv===0)return false;if(pc.n===-1&&mv<=0)return false;for(let j=0;j<all.length;j++)if(j!==i&&all[j].s.includes(i))return false;if(pc.n===-1)return mv>0;const p=getRoute(pc.r);const ci=p.indexOf(pc.n);return ci+mv>=0;}
 
-// 스킬 DB
 const YS=[{id:"pigTime",nm:"개돼지시간",em:"🐷",ds:"도+개 등록",cl:"bg-pink-700"},{id:"power100",nm:"100마력",em:"⚡",ds:"걸 확정",cl:"bg-purple-700"},{id:"reverse",nm:"후진기어",em:"⏪",ds:"빽도 확정",cl:"bg-red-700"},{id:"double",nm:"더블더블",em:"✖️",ds:"결과 2배",cl:"bg-orange-700"},{id:"moOrDo",nm:"모아니면도",em:"🎰",ds:"모50/도50",cl:"bg-teal-700"},{id:"midas",nm:"마이더스의손",em:"👑",ds:"윷50/모50",cl:"bg-yellow-700"},{id:"takeOut",nm:"테이크아웃",em:"📦",ds:"다음턴 사용",cl:"bg-cyan-700"},{id:"backStep",nm:"백스텝",em:"🔙",ds:"뒤로 이동",cl:"bg-gray-600"}];
 const PS=[{id:"goHome",nm:"강제귀가",em:"🏠",ds:"상대→출발",tgt:"oppPiece",cl:"bg-amber-800"},{id:"carry",nm:"엎고가실게요",em:"🎒",ds:"대기말 업기",tgt:"myPiece",cl:"bg-amber-800"},{id:"swap",nm:"자리교환",em:"🔄",ds:"말 위치교환",tgt:"oppPiece",cl:"bg-amber-800"},{id:"frontPlz",nm:"제앞에놔주세요",em:"📍",ds:"상대 앞 소환",tgt:"oppPiece",cl:"bg-amber-800"},{id:"backHug",nm:"백허그",em:"🤗",ds:"상대 뒤이동",tgt:"oppPiece",cl:"bg-amber-800"},{id:"flipTable",nm:"밥상뒤집기",em:"🍽️",ds:"모두 랜덤",tgt:null,cl:"bg-amber-800"},{id:"bomb",nm:"폭발물주의",em:"💣",ds:"폭탄 설치",tgt:"node",cl:"bg-amber-800"},{id:"gate",nm:"코앞이네",em:"🚪",ds:"게이트 설치",tgt:"node",cl:"bg-amber-800"}];
 function pickSkills(){const y=[...YS].sort(()=>Math.random()-.5)[0],p=[...PS].sort(()=>Math.random()-.5)[0];return[{...y,used:false,type:"yut"},{...p,used:false,type:"piece"}];}
@@ -60,7 +60,7 @@ function ser(pcs){return pcs.map(p=>({n:p.n,r:p.r,f:p.f,s:p.s}))}
 function des(arr){if(!arr)return initPcs();return(Array.isArray(arr)?arr:Object.values(arr)).map(p=>({n:p.n??-1,r:p.r??"outer",f:p.f??false,s:p.s??[]}))}
 
 // ============================================================
-// 1. 로그인 (접속 → 바로 매칭 버튼)
+// 1. 로그인
 // ============================================================
 signInAnonymously(auth).then(()=>{
   const uid=auth.currentUser.uid;
@@ -82,13 +82,15 @@ findBtn.addEventListener("click",async()=>{
     for(const d of snap.docs){if(d.data().player1===uid)continue;
       matchId=d.id;
       await updateDoc(doc(fdb,"matches",matchId),{player2:uid,status:"playing",
-        [`pcs.${uid}`]:ser(initPcs()),[`sk.${uid}`]:pickSkills()});
+        [`pcs.${uid}`]:ser(initPcs()),[`sk.${uid}`]:pickSkills(),
+        [`alive.${uid}`]:Date.now()});
       ok=true;startGame(matchId);break;}
     if(!ok){
       const m=await addDoc(ref,{status:"waiting",player1:uid,player2:null,cur:uid,
         yut:null,pcs:{[uid]:ser(initPcs())},sk:{[uid]:pickSkills()},
-        bombs:[],gates:[],saved:null,ts:Date.now()});
-      matchId=m.id;statusMsg.innerHTML=`<span class="text-indigo-300 animate-pulse">대기 중... ⏳</span>`;
+        bombs:[],gates:[],saved:null,ts:Date.now(),
+        alive:{[uid]:Date.now()},chat:[]});
+      matchId=m.id;
       startGame(matchId);}
   }catch(e){console.error(e);statusMsg.innerHTML=`<span class="text-red-400">매칭 오류</span>`;findBtn.disabled=false;findBtn.style.opacity="1";}
 });
@@ -98,19 +100,35 @@ findBtn.addEventListener("click",async()=>{
 // ============================================================
 function startGame(mid){
   if(unsubMatch)unsubMatch();
+  startPresence(mid);
+  chatToggle.classList.remove("hidden");
+  lastChatLen=0;unreadChat=0;updateBadge();
+
   unsubMatch=onSnapshot(doc(fdb,"matches",mid),snap=>{
     if(!snap.exists())return;
     const m=snap.data();lastMatch=m;
     const uid=auth.currentUser.uid;
 
+    // 채팅 업데이트
+    renderChat(m);
+
     if(m.status==="waiting"){
-      // 로비 유지, 대기 메시지만 표시
       lobbyEl.classList.remove("hidden");gameEl.classList.add("hidden");
       statusMsg.innerHTML=`<span class="text-indigo-300 animate-pulse">상대 대기 중... ⏳</span>`;
       return;
     }
 
-    // playing/finished → 게임 화면 전환
+    // 퇴장 감지
+    if(m.status==="playing"){
+      const opp=m.player1===uid?m.player2:m.player1;
+      if(m.status==="playing"&&m.left===opp){
+        gameStatusMsg.innerHTML=`<span class="text-2xl font-black text-yellow-400">🏆 상대 퇴장! 승리!</span>`;
+        rollBtn.disabled=true;rollBtn.classList.add("hidden");stopTimer();stopPresence();
+        backLobbyBtn.classList.remove("hidden");
+        renderAll(m);return;
+      }
+    }
+
     lobbyEl.classList.add("hidden");gameEl.classList.remove("hidden");
 
     const amP1=m.player1===uid;
@@ -122,11 +140,10 @@ function startGame(mid){
     const me=m.cur===uid,hasY=m.yut!=null;
     const myP=des(m.pcs?.[uid]);
 
-    // 게임 종료
     if(m.status==="finished"){
       const win=myP.every(p=>p.f);
       gameStatusMsg.innerHTML=`<span class="text-3xl font-black ${win?'text-yellow-400':'text-red-400'}">${win?'🏆 승리!':'💀 패배...'}</span>`;
-      rollBtn.disabled=true;rollBtn.classList.add("hidden");stopTimer();
+      rollBtn.disabled=true;rollBtn.classList.add("hidden");stopTimer();stopPresence();
       backLobbyBtn.classList.remove("hidden");
       renderAll(m);return;
     }
@@ -150,15 +167,108 @@ function startGame(mid){
   });
 }
 
-backLobbyBtn.addEventListener("click",()=>{
+// ============================================================
+// 4. 퇴장 감지 (Presence)
+// ============================================================
+function startPresence(mid){
+  stopPresence();
+  // 5초마다 alive 타임스탬프 갱신
+  const tick=async()=>{
+    if(!matchId)return;
+    const uid=auth.currentUser?.uid;if(!uid)return;
+    try{await updateDoc(doc(fdb,"matches",mid),{[`alive.${uid}`]:Date.now()});}catch(e){}
+  };
+  tick();
+  presenceInterval=setInterval(tick,5000);
+
+  // 페이지 떠날 때 left 필드 기록
+  window._leaveHandler=async()=>{
+    if(!matchId)return;
+    const uid=auth.currentUser?.uid;if(!uid)return;
+    try{await updateDoc(doc(fdb,"matches",matchId),{left:uid});}catch(e){}
+  };
+  window.addEventListener("beforeunload",window._leaveHandler);
+}
+
+function stopPresence(){
+  if(presenceInterval){clearInterval(presenceInterval);presenceInterval=null;}
+  if(window._leaveHandler){window.removeEventListener("beforeunload",window._leaveHandler);window._leaveHandler=null;}
+}
+
+backLobbyBtn.addEventListener("click",async()=>{
+  // 나갈 때 left 기록
+  if(matchId&&auth.currentUser){
+    try{await updateDoc(doc(fdb,"matches",matchId),{left:auth.currentUser.uid});}catch(e){}
+  }
   if(unsubMatch)unsubMatch();
+  stopPresence();
   matchId=null;lastMatch=null;
   rollBtn.classList.remove("hidden");rollBtn.disabled=true;
   findBtn.disabled=false;findBtn.style.opacity="1";
   statusMsg.innerHTML="대전을 시작하세요!";
   gameEl.classList.add("hidden");lobbyEl.classList.remove("hidden");
+  chatToggle.classList.add("hidden");chatPanel.classList.remove("open");
 });
 
+// ============================================================
+// 5. 채팅
+// ============================================================
+chatToggle.addEventListener("click",()=>{chatOpen=!chatOpen;chatPanel.classList.toggle("open",chatOpen);if(chatOpen){unreadChat=0;updateBadge();chatMsgs.scrollTop=chatMsgs.scrollHeight;chatInput.focus();}});
+chatClose.addEventListener("click",()=>{chatOpen=false;chatPanel.classList.remove("open");});
+
+chatSend.addEventListener("click",sendChat);
+chatInput.addEventListener("keydown",e=>{if(e.key==="Enter")sendChat();});
+
+async function sendChat(){
+  const txt=chatInput.value.trim();if(!txt||!matchId)return;
+  chatInput.value="";
+  const uid=auth.currentUser.uid;
+  const msg={uid,text:txt.slice(0,100),ts:Date.now()};
+  try{await updateDoc(doc(fdb,"matches",matchId),{chat:arrayUnion(msg)});}catch(e){console.error(e);}
+}
+
+function renderChat(m){
+  const msgs=m.chat||[];
+  const uid=auth.currentUser.uid;
+
+  // 새 메시지 알림
+  if(msgs.length>lastChatLen){
+    const newMsgs=msgs.slice(lastChatLen);
+    const oppNew=newMsgs.filter(msg=>msg.uid!==uid);
+    if(oppNew.length>0&&!chatOpen){
+      unreadChat+=oppNew.length;
+      updateBadge();
+      // 토스트 알림
+      showToast(`💬 ${oppNew[oppNew.length-1].text.slice(0,20)}${oppNew[oppNew.length-1].text.length>20?'...':''}`);
+    }
+  }
+  lastChatLen=msgs.length;
+
+  // 렌더
+  chatMsgs.innerHTML="";
+  if(msgs.length===0){
+    chatMsgs.innerHTML=`<div class="chat-msg sys">채팅을 시작하세요!</div>`;
+    return;
+  }
+  msgs.forEach(msg=>{
+    const div=document.createElement("div");
+    const isMe=msg.uid===uid;
+    div.className=`chat-msg ${isMe?'me':'opp'}`;
+    div.textContent=msg.text;
+    chatMsgs.appendChild(div);
+  });
+  // 자동 스크롤 (열려있을 때)
+  if(chatOpen)chatMsgs.scrollTop=chatMsgs.scrollHeight;
+}
+
+function updateBadge(){
+  if(unreadChat>0){chatBadge.style.display="flex";chatBadge.textContent=unreadChat>9?"9+":unreadChat;}
+  else{chatBadge.style.display="none";}
+}
+
+// ============================================================
+// 6. 타이머 / 윷 / 이동 (기존 로직)
+// ============================================================
 function yutClr(y){return y.value>=4?"#ffd23f":y.value<0?"#ef4444":"#c4b5fd";}
 
 async function applySaved(m){if(busy)return;busy=true;try{await updateDoc(doc(fdb,"matches",matchId),{yut:m.saved,saved:null});}catch(e){console.error(e);}finally{busy=false;}}
@@ -168,9 +278,6 @@ async function autoSkip(m){if(busy)return;
   busy=true;
   setTimeout(async()=>{try{await updateDoc(doc(fdb,"matches",matchId),{cur:opp,yut:null,ts:Date.now()});}catch(e){console.error(e);}finally{busy=false;}},1200);}
 
-// ============================================================
-// 타이머
-// ============================================================
 const TSEC=15;
 function startTimer(ph){stopTimer();timerWrap.classList.remove("hidden");tLeft=TSEC;updTmr();
   turnTmr=setInterval(()=>{tLeft-=.1;if(tLeft<=0){tLeft=0;stopTimer();onTO(ph);}updTmr();},100);}
@@ -181,17 +288,11 @@ function updTmr(){const p=Math.max(0,tLeft/TSEC*100);timerBar.style.width=p+"%";
 async function onTO(ph){if(busy||!lastMatch)return;const uid=auth.currentUser.uid;if(lastMatch.cur!==uid)return;
   if(ph==="throw"){busy=true;try{
     const res=randYut();
-    if(res.value===0){
-      const opp=lastMatch.player1===uid?lastMatch.player2:lastMatch.player1;
-      await updateDoc(doc(fdb,"matches",matchId),{yut:null,cur:opp,ts:Date.now()});
-    }else{
-      await updateDoc(doc(fdb,"matches",matchId),{yut:res});
-    }
+    if(res.value===0){const opp=lastMatch.player1===uid?lastMatch.player2:lastMatch.player1;
+      await updateDoc(doc(fdb,"matches",matchId),{yut:null,cur:opp,ts:Date.now()});}
+    else{await updateDoc(doc(fdb,"matches",matchId),{yut:res});}
   }catch(e){console.error(e);}finally{busy=false;}}else autoSkip(lastMatch);}
 
-// ============================================================
-// 윷 던지기 + 스킬
-// ============================================================
 function randYut(){const r=Math.random()*100;if(r<3)return{value:0,name:"낙",color:"text-gray-400"};if(r<8)return{value:-1,name:"빽도",color:"text-red-400"};if(r<28)return{value:1,name:"도",color:"text-white"};if(r<56)return{value:2,name:"개",color:"text-blue-300"};if(r<78)return{value:3,name:"걸",color:"text-purple-300"};if(r<92)return{value:4,name:"윷",color:"text-yellow-400"};return{value:5,name:"모",color:"text-yellow-400"};}
 function applyYS(id){switch(id){case"pigTime":{const pick=Math.random()<.5;return pick?{value:1,name:"도🐷",color:"text-pink-300",noExtra:true}:{value:2,name:"개🐷",color:"text-pink-300",noExtra:true};}case"power100":return{value:3,name:"걸⚡",color:"text-purple-400"};case"reverse":return{value:-1,name:"빽도⏪",color:"text-red-400"};case"double":{const b=randYut();return{...b,value:b.value*2,name:b.name+"✖️2"};}case"moOrDo":return Math.random()<.5?{value:5,name:"모🎰",color:"text-yellow-400"}:{value:1,name:"도🎰",color:"text-white"};case"midas":return Math.random()<.5?{value:4,name:"윷👑",color:"text-yellow-400"}:{value:5,name:"모👑",color:"text-yellow-400"};case"takeOut":{const b=randYut();return{...b,isTakeOut:true};}case"backStep":{const b=randYut();return{value:-Math.abs(b.value),name:b.name+"🔙",color:"text-gray-300"};}default:return randYut();}}
 
@@ -206,12 +307,9 @@ rollBtn.addEventListener("click",async()=>{
       showToast(`${res.name} 발동!`);activeSkill=null;}else{res=randYut();}
     if(res.isTakeOut){const uid=auth.currentUser.uid,opp=lastMatch.player1===uid?lastMatch.player2:lastMatch.player1;
       u.saved=res;u.yut=null;u.cur=opp;u.ts=Date.now();showToast("📦 테이크아웃!");}
-    else if(res.value===0){
-      // 낙: 결과 표시 후 바로 턴 넘기기
-      const uid=auth.currentUser.uid,opp=lastMatch.player1===uid?lastMatch.player2:lastMatch.player1;
-      u.yut=null;u.cur=opp;u.ts=Date.now();
-      showToast("낙! 턴 넘김");
-    }else{u.yut=res;}
+    else if(res.value===0){const uid=auth.currentUser.uid,opp=lastMatch.player1===uid?lastMatch.player2:lastMatch.player1;
+      u.yut=null;u.cur=opp;u.ts=Date.now();showToast("낙! 턴 넘김");}
+    else{u.yut=res;}
     await updateDoc(doc(fdb,"matches",matchId),u);}catch(e){console.error(e);rollBtn.disabled=false;}finally{busy=false;}},700);
 });
 
@@ -306,7 +404,6 @@ function renderPieces(m){
     d.innerText=pc.f?"🏁":(cr>=0?`↕${cr+1}`:`${i+1}${stk}\n${pc.n===-1?'대기':'📍'+pc.n}`);oppPcsEl.appendChild(d);});}
   else oppPcsEl.innerHTML=`<div class="col-span-2 text-gray-600 text-xs py-2">대기 중</div>`;
 }
-
 function renderBoard(m){
   const uid=auth.currentUser.uid,opp=m.player1===uid?m.player2:m.player1;
   const myP=des(m.pcs?.[uid]),opP=des(m.pcs?.[opp]);const bombs=m.bombs||[],gates=m.gates||[];
@@ -326,7 +423,7 @@ function renderBoard(m){
 }
 
 // ============================================================
-// 보드 초기화
+// 보드 초기화 + 이펙트
 // ============================================================
 function initBoard(){
   const lines=[[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,0],[5,20,21,22],[22,23,24,15],[10,25,26,22],[22,27,28,0]];
@@ -337,12 +434,7 @@ function initBoard(){
     let cls="yut-node ";if(n===0)cls+="corner node-start";else if(corners.includes(n))cls+="corner node-corner";else if(center.includes(n))cls+="corner node-center";else cls+="node-normal";
     el.className=cls;el.style.left=pos[0]+"px";el.style.top=pos[1]+"px";el.innerHTML=`<span>${{0:"출발",5:"5",10:"10",15:"15",22:"★"}[n]||n}</span>`;boardEl.appendChild(el);});
 }
-
-// 이펙트
 function showFx(t){const el=document.createElement("div");el.className="fx-banner";el.textContent=t;fxOverlay.appendChild(el);setTimeout(()=>el.remove(),1000);}
 function showToast(m){const el=document.createElement("div");el.className="event-toast";el.textContent=m;document.body.appendChild(el);setTimeout(()=>el.remove(),2500);}
-
-initBoard();
-
 
 initBoard();
