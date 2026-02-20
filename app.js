@@ -97,15 +97,21 @@ findBtn.addEventListener("click",async()=>{
 // 3. 게임 실시간 감지
 // ============================================================
 function startGame(mid){
-  lobbyEl.classList.add("hidden");gameEl.classList.remove("hidden");
   if(unsubMatch)unsubMatch();
   unsubMatch=onSnapshot(doc(fdb,"matches",mid),snap=>{
     if(!snap.exists())return;
     const m=snap.data();lastMatch=m;
     const uid=auth.currentUser.uid;
 
-    if(m.status==="waiting"){gameStatusMsg.innerHTML=`<span class="text-indigo-300 animate-pulse">대기 중...</span>`;
-      p1Name.textContent="P1";p2Name.textContent="???";return;}
+    if(m.status==="waiting"){
+      // 로비 유지, 대기 메시지만 표시
+      lobbyEl.classList.remove("hidden");gameEl.classList.add("hidden");
+      statusMsg.innerHTML=`<span class="text-indigo-300 animate-pulse">상대 대기 중... ⏳</span>`;
+      return;
+    }
+
+    // playing/finished → 게임 화면 전환
+    lobbyEl.classList.add("hidden");gameEl.classList.remove("hidden");
 
     const amP1=m.player1===uid;
     p1Name.textContent=amP1?"나":"상대";p2Name.textContent=amP1?"상대":"나";
@@ -156,7 +162,10 @@ backLobbyBtn.addEventListener("click",()=>{
 function yutClr(y){return y.value>=4?"#ffd23f":y.value<0?"#ef4444":"#c4b5fd";}
 
 async function applySaved(m){if(busy)return;busy=true;try{await updateDoc(doc(fdb,"matches",matchId),{yut:m.saved,saved:null});}catch(e){console.error(e);}finally{busy=false;}}
-async function autoSkip(m){if(busy)return;busy=true;const uid=auth.currentUser.uid,opp=m.player1===uid?m.player2:m.player1;
+async function autoSkip(m){if(busy)return;
+  const uid=auth.currentUser.uid,opp=m.player1===uid?m.player2:m.player1;
+  if(!opp){console.warn("autoSkip: no opponent");return;}
+  busy=true;
   setTimeout(async()=>{try{await updateDoc(doc(fdb,"matches",matchId),{cur:opp,yut:null,ts:Date.now()});}catch(e){console.error(e);}finally{busy=false;}},1200);}
 
 // ============================================================
@@ -170,7 +179,15 @@ function updTmr(){const p=Math.max(0,tLeft/TSEC*100);timerBar.style.width=p+"%";
   const w=timerWrap;w.classList.remove("timer-safe","timer-warn","timer-danger");w.classList.add(tLeft>8?"timer-safe":tLeft>4?"timer-warn":"timer-danger");
   timerText.className=`font-bold text-xs ${tLeft>8?'text-emerald-400':tLeft>4?'text-amber-400':'text-red-400'}`;}
 async function onTO(ph){if(busy||!lastMatch)return;const uid=auth.currentUser.uid;if(lastMatch.cur!==uid)return;
-  if(ph==="throw"){busy=true;try{await updateDoc(doc(fdb,"matches",matchId),{yut:randYut()});}catch(e){console.error(e);}finally{busy=false;}}else autoSkip(lastMatch);}
+  if(ph==="throw"){busy=true;try{
+    const res=randYut();
+    if(res.value===0){
+      const opp=lastMatch.player1===uid?lastMatch.player2:lastMatch.player1;
+      await updateDoc(doc(fdb,"matches",matchId),{yut:null,cur:opp,ts:Date.now()});
+    }else{
+      await updateDoc(doc(fdb,"matches",matchId),{yut:res});
+    }
+  }catch(e){console.error(e);}finally{busy=false;}}else autoSkip(lastMatch);}
 
 // ============================================================
 // 윷 던지기 + 스킬
@@ -189,7 +206,12 @@ rollBtn.addEventListener("click",async()=>{
       showToast(`${res.name} 발동!`);activeSkill=null;}else{res=randYut();}
     if(res.isTakeOut){const uid=auth.currentUser.uid,opp=lastMatch.player1===uid?lastMatch.player2:lastMatch.player1;
       u.saved=res;u.yut=null;u.cur=opp;u.ts=Date.now();showToast("📦 테이크아웃!");}
-    else{u.yut=res;}
+    else if(res.value===0){
+      // 낙: 결과 표시 후 바로 턴 넘기기
+      const uid=auth.currentUser.uid,opp=lastMatch.player1===uid?lastMatch.player2:lastMatch.player1;
+      u.yut=null;u.cur=opp;u.ts=Date.now();
+      showToast("낙! 턴 넘김");
+    }else{u.yut=res;}
     await updateDoc(doc(fdb,"matches",matchId),u);}catch(e){console.error(e);rollBtn.disabled=false;}finally{busy=false;}},700);
 });
 
