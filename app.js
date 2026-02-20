@@ -343,3 +343,6 @@ function showFx(t){const el=document.createElement("div");el.className="fx-banne
 function showToast(m){const el=document.createElement("div");el.className="event-toast";el.textContent=m;document.body.appendChild(el);setTimeout(()=>el.remove(),2500);}
 
 initBoard();
+
+
+initBoard();
